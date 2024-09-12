@@ -17,9 +17,18 @@ class BorrowsController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index()
+    public function index(Request $request)
     {
-        return Borrows::all();
+        // return $bookTitle;
+        $borrowerName = $request->query('borrower_name');
+        $query = Borrows::query();
+        if ($borrowerName) {
+            $query->whereHas('borrower', function ($q) use ($borrowerName) {
+                $q->where('name', 'like', "%$borrowerName%");
+            });
+        }
+        $borrows = $query->get();
+        return response()->json($borrows);
     }
 
     /**
@@ -45,27 +54,6 @@ class BorrowsController extends Controller
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
-
-        // $borrow = Borrows::where('book_id', $request->book_id)
-        //     ->where('borrow_status', 'Borrow')
-        //     ->where('borrower_id', $request->borrower_id)
-        //     ->first();
-        // if ($borrow) {
-        //     return response()->json(['error' => 'A borrow request already exists'], 409);
-        // }
-
-        // $book = DB::table('books')->where('id', $request->book_id)->first();
-        // // return $book;
-        // // return $request->number_of_borrow_books;
-        // if (!$book) {
-        //     return response()->json(['error' => 'Book not found'], 404);
-        // }
-
-        // DB::table('books')
-        //     ->where('id', $request->book_id)
-        //     ->update([
-        //         'number_of_books' => $book->number_of_books - $request->number_of_borrow_books,
-        //     ]);
         DB::beginTransaction();
         try {
             $borrow = Borrows::create([
@@ -87,10 +75,13 @@ class BorrowsController extends Controller
                         'book_id' => $book['id'],
                         'qty' => $book['qty'],
                         'qty_borrow' => $book['qty'],
-                        'status' => 'Borrowed'
+                        'status' => 'Borrowed',
                     ]);
                     $num_of_book = $existBook->number_of_books;
-                    if($num_of_book < $book['qty']) return response()->json(["message" => "Do not have qty for borrow"]);
+                    if ($num_of_book < $book['qty']) {
+                        return response()->json(["message" => "Do not have qty for borrow"]);
+                    }
+
                     $existBook->number_of_books -= $book['qty'];
                     $existBook->save();
                 }
@@ -118,95 +109,101 @@ class BorrowsController extends Controller
         }
         return $list;
     }
-    public function getBorrowDetail($id)
+    public function getBorrowDetail(Request $request, $id)
     {
-        $borrowDetail = Borrows::where('id', $id)->first();
+        $query = Borrows::with('borrowDetails.book')->where('id', $id);
+        //search by  title
 
-        // $details = BorrowDetail::with('book')->get();
-        // $details = DB::table('borrow_details as bd')
-        //     ->join('books as b', 'bd.book_id', '=', 'b.id')->get();
+        if ($request->has('borrower_name') && !empty($request->borrower_name)) {
+            $query->whereHas('borrower', function ($q) use ($request) {
+                $q->where('name', 'like', '%' . $request->borrower_name . '%');
+            });
 
+        }
+        $borrowDetail = $query->first();
         if (!$borrowDetail) {
             return response()->json(['error' => 'Borrow record not found'], 404);
         }
-
-        foreach($borrowDetail->borrowDetails as $data){
-            $data->book_name = $data->book->title;
-            unset($data->book);
+        if ($request->has('book_title') && !empty($request->book_title)) {
+            $bookTitle = $request->book_title;
+            $borrowDetail->borrowDetails = $borrowDetail->borrowDetails->filter(function ($detail) use ($bookTitle) {
+                return strpos(strtolower($detail->book->title), strtolower($bookTitle)) !== false;
+            });
         }
-        // $borrowDetail->books = $this->getBorrowDetails($details, $borrowDetail->id);
-        return $borrowDetail;
+        foreach ($borrowDetail->borrowDetails as $detail) {
+            $detail->book_name = $detail->book->title;
+            unset($detail->book);
+        }
+        return response()->json($borrowDetail);
     }
+
     public function show(Borrows $borrows)
     {
         return $borrows;
     }
     public function update(Request $request, $id)
-{
-    $borrows = Borrows::find($id);
-    if (!$borrows) {
-        return response()->json(['error' => 'Borrow record not found'], 404);
-    }
-
-    $totalRefund = 0;
-
-    foreach ($request->books as $book) {
-        $borrowDetail = BorrowDetail::where('borrow_id', $id)->where('book_id', $book['id'])->first();
-        if (!$borrowDetail) {
-            return response()->json(['error' => 'Borrow detail not found for book id ' . $book['id']], 404);
+    {
+        $borrows = Borrows::find($id);
+        if (!$borrows) {
+            return response()->json(['error' => 'Borrow record not found'], 404);
         }
 
-        $exist_book = Books::find($book['id']);
-        if (!$exist_book) {
-            return response()->json(['error' => 'Book not found'], 404);
+        $totalRefund = 0;
+
+        foreach ($request->books as $book) {
+            $borrowDetail = BorrowDetail::where('borrow_id', $id)->where('book_id', $book['id'])->first();
+            if (!$borrowDetail) {
+                return response()->json(['error' => 'Borrow detail not found for book id ' . $book['id']], 404);
+            }
+
+            $exist_book = Books::find($book['id']);
+            if (!$exist_book) {
+                return response()->json(['error' => 'Book not found'], 404);
+            }
+
+            $returnQty = $book['qty'];
+            $borrowedQty = $borrowDetail->qty;
+
+            // If the return quantity matches the borrowed quantity
+            if ($returnQty == $borrowedQty) {
+                $exist_book->number_of_books += $returnQty;
+                $exist_book->save();
+
+                $borrowDetail->update([
+                    'qty' => 0,
+                    'status' => 'Returned All Book',
+                ]);
+            } elseif ($returnQty < $borrowedQty) {
+                $exist_book->number_of_books += $returnQty;
+                $exist_book->save();
+
+                $borrowDetail->update([
+                    'qty' => $borrowedQty - $returnQty,
+                    'status' => 'Partially Returned',
+                ]);
+
+                $unreturnedQty = $borrowedQty - $returnQty;
+                $refundPerBook = 5;
+                $totalRefund += $unreturnedQty * $refundPerBook;
+            } else {
+                return response()->json(['error' => 'Returned quantity exceeds borrowed quantity'], 400);
+            }
         }
 
-        $returnQty = $book['qty'];
-        $borrowedQty = $borrowDetail->qty;
-
-        // If the return quantity matches the borrowed quantity
-        if ($returnQty == $borrowedQty) {
-            $exist_book->number_of_books += $returnQty;
-            $exist_book->save();
-
-            $borrowDetail->update([
-                'qty' => 0,
-                'status' => 'Returned All Book'
+        $allBooks = BorrowDetail::where('borrow_id', $id)->sum('qty');
+        if ($allBooks == 0) {
+            $borrows->update([
+                'return_date' => $request->return_date,
+                'borrow_status' => 'Return',
             ]);
         }
-        elseif ($returnQty < $borrowedQty) {
-            $exist_book->number_of_books += $returnQty;
-            $exist_book->save();
 
-            $borrowDetail->update([
-                'qty' => $borrowedQty - $returnQty,
-                'status' => 'Partially Returned'
-            ]);
-
-            $unreturnedQty = $borrowedQty - $returnQty;
-            $refundPerBook = 5;
-            $totalRefund += $unreturnedQty * $refundPerBook;
-        } else {
-            return response()->json(['error' => 'Returned quantity exceeds borrowed quantity'], 400);
-        }
+        return response()->json([
+            'message' => 'Books returned successfully',
+            'borrow' => $borrows,
+            'total_refund' => $totalRefund,
+        ], 200);
     }
-
-    $allBooks = BorrowDetail::where('borrow_id', $id)->sum('qty');
-    if ($allBooks == 0) {
-        $borrows->update([
-            'return_date' => $request->return_date,
-            'borrow_status' => 'Return',
-        ]);
-    }
-
-    return response()->json([
-        'message' => 'Books returned successfully',
-        'borrow' => $borrows,
-        'total_refund' => $totalRefund
-    ], 200);
-}
-
-    
 
     /**
      * Remove the specified resource from storage.

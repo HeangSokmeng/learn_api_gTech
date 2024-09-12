@@ -11,9 +11,7 @@ class Borrows extends Model
     protected $fillable = [
         'borrower_id', 'librarian_id', 'borrow_date', 'expect_return_date', 'return_date','borrow_status','number_of_borrow_books'
     ];
-    public function book() {
-        return $this->belongsTo(Books::class);
-    }
+
 
     public function borrower() {
         return $this->belongsTo(UserThree::class, 'borrower_id');
@@ -24,6 +22,7 @@ class Borrows extends Model
     }
     public function borrowDetails()
     {
-        return $this->hasMany(BorrowDetail::class,'borrow_id','id');
+        return $this->hasMany(BorrowDetail::class, 'borrow_id', 'id');
     }
+
 }
