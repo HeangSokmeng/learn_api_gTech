@@ -112,28 +112,26 @@ class BorrowsController extends Controller
     public function getBorrowDetail(Request $request, $id)
     {
         $query = Borrows::with('borrowDetails.book')->where('id', $id);
-        //search by  title
-
-        if ($request->has('borrower_name') && !empty($request->borrower_name)) {
-            $query->whereHas('borrower', function ($q) use ($request) {
-                $q->where('name', 'like', '%' . $request->borrower_name . '%');
+        if ($request->has('search') && !empty($request->search)) {
+            $searchTerm = $request->search;
+            $query->whereHas('borrower', function ($q) use ($searchTerm) {
+                $q->where('name', 'like', '%' . $searchTerm . '%');
             });
-
+            $query->orWhereHas('borrowDetails.book', function ($q) use ($searchTerm) {
+                $q->where('title', 'like', '%' . $searchTerm . '%');
+            });
         }
         $borrowDetail = $query->first();
+
         if (!$borrowDetail) {
             return response()->json(['error' => 'Borrow record not found'], 404);
         }
-        if ($request->has('book_title') && !empty($request->book_title)) {
-            $bookTitle = $request->book_title;
-            $borrowDetail->borrowDetails = $borrowDetail->borrowDetails->filter(function ($detail) use ($bookTitle) {
-                return strpos(strtolower($detail->book->title), strtolower($bookTitle)) !== false;
-            });
-        }
+
         foreach ($borrowDetail->borrowDetails as $detail) {
             $detail->book_name = $detail->book->title;
             unset($detail->book);
         }
+
         return response()->json($borrowDetail);
     }
 
